@@ -1,4 +1,6 @@
 function X = simplex_projection(Y)
+%The output of X satisfies sum(X(i,:))=1,i=1,2,...,N; 
+
 [N,D] = size(Y);
 X = sort(Y,2,'descend');
 Xtmp = (cumsum(X,2)-1)*diag(sparse(1./(1:D)));
