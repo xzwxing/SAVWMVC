@@ -5,6 +5,6 @@
 
 1. "SAVWMVC.m" is the main code of our algorithm.
 2. The "data" folder stores the data we used in our experiments.
-3.  "evaluate_metrics.m" is used to evaluate clustering performance.
+3.  "evaluate_metrics.m" is used to evaluate Classification performance.
 4.  "simplex_projection.m" is used to projected $F$ onto the probability 
      simplex (corresponding to Algorithm 1).
