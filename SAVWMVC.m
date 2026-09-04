@@ -1,106 +1,134 @@
-function results = SAVWMVC(filename,eta, max_iter, lambda1, lambda2)
-load(filename);
-zeroColumns = [];% stores all-zero columns (samples), which are an invalid samples.
-for v=1:length(X)
-    X{v} =  X{v}';
-    temp = find( all( X{v} == 0, 2)); X{v}(temp',:)=[];
-    temp = find( all( X{v} == 0, 1));
-    zeroColumns = [zeroColumns,temp ];
+
+function [P,F,a,obj_values]= SAVWMVC(X, Y, lambda1,lambda2, eta, mu1, mu_Max, max_iter, tol)
+
+beta1 = 0.9;  beta2 = 0.999;
+epsilon = 1e-10; 
+rho = 1.1; 
+mu2 = 1;
+V=length(X);
+[N, L] = size(Y); 
+OneL =ones(L,1);
+
+XXt=cell(1,V);
+for v=1:V
+    XXt{v}=X{v}*X{v}';
 end
 
-if ~isempty(zeroColumns)
-    Y(zeroColumns)=[];% Exclude the labels corresponding to all-zero samples.
+%% Initialize variables
+P = cell(1, V); 
+a = cell(1, V); 
+X_hat = cell(1, V); 
+rng(0)
+for v = 1:V
+    % P{v}   =   ones(size(X{v},1)+1,L) /sqrt( size(X{v},1)+1 ); 
+    a{v}   =   ones(size(X{v},1),1) /size(X{v}+1,1);
+    P{v}   =   rand(size(X{v},1)+1,L) /sqrt( size(X{v},1)+1 ); 
+    X_hat{v} = [ones(1,N); X{v}];
 end
 
-for v=1:length(X)
-    X{v}(:,zeroColumns)=[];
-    X{v}= ( X{v}-min(min(X{v})) )/( max(max(X{v}))-min(min(X{v})) ); % Normalization.
+Q = P;  % Initialize Q = P
+F = ones(N, V)/V; %Initialize F, ensure that the sum of F(i,:) is 1
+
+m_F = zeros(size(F));  %Initialize the first-order moment estimation of the gradient
+v_F = zeros(size(F));  %Initialize the second-order moment estimation of the gradient
+m_Q = cell(1, V); v_Q = cell(1, V); m_av=cell(1, V); v_av=cell(1, V);
+for v = 1:V
+    m_Q{v} = zeros(size(Q{v}));
+    v_Q{v} = zeros(size(Q{v}));   
+    m_av{v} = zeros(size(a{v}));
+    v_av{v} = zeros(size(a{v}));
 end
 
-%% ========== Ten fold cross validation ===========
-rng(0);
-N = length(Y);
-k_folds = 10; % Ten fold
-fold_indices = crossvalind('Kfold', Y, k_folds);
+% Initialize Lagrange multipliers
+Delta = cell(1, V);
+for v = 1:V
+    Delta{v} = zeros(size(P{v}));
+end
 
-acc_list = []; % Store the results of each fold.
-nmi_list = [];
-purity_list = [];
-obj_all = [];
-
-fprintf('========== Start 10 fold cross validation  ==========\n');
-tic;
-
-for fold = 1:k_folds
-    fprintf('\n------------  %d fold: ------------\n', fold);
-    % The k-th fold is used as the test set, and the rest is used as the training set
-    test_idx = (fold_indices == fold);
-    train_idx = ~test_idx;
-    
-    % Divide training/testing
-    for v=1:length(X)
-        X_train{v} = X{v}(:, train_idx);
-        X_test{v}  = X{v}(:, test_idx);
+obj_values = zeros(max_iter, 1);
+for iter = 1:max_iter
+    % Calculate loss function
+    Y_out = zeros(size(Y));  fXav = zeros(size(F));
+    for v = 1:V       
+        temp = X_hat{v}'*P{v};
+        Y_out = Y_out + sparse( diag(F(:,v)) ) * temp;
+        fXav(:,v) = X{v}'*a{v};
     end
-    Y_train = Y(train_idx);
-    Y_test  = Y(test_idx);
+    loss = 0.5*sum( sum( (Y_out - Y).^2 ) );
+        
+    % Add regularization term
+    obj_value = loss + 0.5*lambda1 * sum( sum(( F- fXav ).^2)); %+ lambda2 * sum( sum(abs(PP)) );
+    obj_values(iter) = obj_value;
     
-    L = max(Y); 
-    gnd1=repmat(Y_train,1,max(Y_train));
-    Y_train1=zeros(size(gnd1));
+%     if iter==1 || mod(iter,100)==0 || iter==max_iter
+%         fprintf('Iteration %d/%d, Objective function value: %f\n', iter, max_iter, obj_value);
+%     end
     
-    for i=1:L
-        Ind=(gnd1(:,i)==i);
-        Y_train1(Ind,i)=1;
+    % Check convergence
+    if iter > 1 && abs(obj_values(iter) - obj_values(iter-1)) < tol
+       %  fprintf('The algorithm has converged at %d iteration\n', iter);
+        break;
     end
-    clear gnd1;
     
-    %% parameters
-    mu_max = 5000;
-    tol1 = 1e-6;
-    mu1 = 0.99;
-    
-    %% Train the model
-    fprintf('Train the %d fold model ..\n', fold);
-    [P,F,a,obj_values] = MultiViews_classifier(X_train, Y_train1,lambda1,lambda2, eta,mu1,mu_max, max_iter, tol1);
-    
-    %% test model
-    fprintf('Train the %d fold model ..\n', fold);
-    Y_out = zeros(length(Y_test),L);
-    for v=1:length(X_test)
-        Y_out = Y_out + sparse( diag( X_test{v}'*a{v} ) ) * [ones(1,size(X_test{v},2));X_test{v}]'*P{v};
+    %% Update F 
+    grad_F = zeros(size(F));  Temp = zeros(size(Y));
+    for k=1:V
+        Temp = Temp + sparse( diag(F(:,k)) ) * X_hat{k}'*Q{k};            
     end
-    [~,Y_pred]=max(Y_out,[],2);
-    [acc, nmi, purity] = evaluate_metrics(Y_test', Y_pred');
+    for v=1:V
+        grad_F(:,v) = grad_F(:,v) + ( ( Temp -Y) .* ( X_hat{v}'* Q{v}) )* OneL;
+    end
+    grad_F =grad_F + lambda1*( F - fXav ) -mu1./(F.^2);
+
+    m_F = beta1 * m_F + (1 - beta1) * grad_F;
+    v_F = beta2 * v_F + (1 - beta2) * (grad_F.^2);
+    m_F_hat = m_F / (1 - beta1^iter);
+    v_F_hat = v_F / (1 - beta2^iter);
+    F = F - eta * m_F_hat ./ (sqrt(v_F_hat) + epsilon);
+    F = max(F, 0);  % ensure F > 0 
+    mu1=0.99*mu1;
     
-    acc_list = [acc_list, acc];
-    nmi_list = [nmi_list, nmi];
-    purity_list = [purity_list, purity];
-    obj_all = obj_values; 
+    F = simplex_projection(F); %Project F onto the probability space
+       
+    %% Update a_v
+   for v=1:V
+        grad_av = lambda1*( XXt{v}*a{v}-X{v}*F(:,v) ) ;   
+        m_av{v} = beta1 * m_av{v} + (1 - beta1) * grad_av;
+        v_av{v} = beta2 * v_av{v} + (1 - beta2) * (grad_av.^2);
+        m_av_hat = m_av{v} / (1 - beta1^iter);
+        v_av_hat = v_av{v} / (1 - beta2^iter);
+        a{v} = a{v} - (eta * m_av_hat) ./ (sqrt(v_av_hat) + epsilon);
+   end
     
-    fprintf('The %d fold results: acc=%.4f,mi=%.4f,purity=%.4f\n', fold, acc, nmi, purity);
+    %% Update Q and P
+    Temp = zeros(size(Y));
+    for k=1:V
+       Temp = Temp + sparse( diag(F(:,k)) ) * X_hat{k}'*Q{k};            
+    end    
+    for v = 1:V    
+       grad_Qv = X_hat{v} * sparse( diag(F(:,v) ) ) * (Temp - Y) +  Delta{v} + mu2*( Q{v} - P{v} );        
+        m_Q{v} = beta1 * m_Q{v} + (1 - beta1) * grad_Qv;
+        v_Q{v} = beta2 * v_Q{v} + (1 - beta2) * (grad_Qv.^2);
+        m_Q_hat = m_Q{v} / (1 - beta1^iter);
+        v_Q_hat = v_Q{v} / (1 - beta2^iter);
+        Q{v} = Q{v} - (eta * m_Q_hat) ./ (sqrt(v_Q_hat) + epsilon);
+    end
+
+      
+       %% Update P
+    for v=1:V 
+        temp = Q{v} + Delta{v}/mu2;
+        P{v} = wthresh(temp, 's', lambda2/mu2);
+    end 
+
+      %% Update Delta  
+    for v=1:V 
+        Delta{v} = Delta{v} + mu2 * (Q{v} - P{v});
+    end
+    
+     mu2=min(rho*mu2,mu_Max);
 end
 
-%% ===== Calculate the ten fold average value ===========
-avg_acc = mean(acc_list);
-avg_nmi = mean(nmi_list);
-avg_purity = mean(purity_list);
 
-fprintf('\n========== Ten fold cross validation result ==========\n');
-fprintf('average ACC = %.4f\n', avg_acc);
-fprintf('average NMI = %.4f\n', avg_nmi);
-fprintf('average Purity = %.4f\n', avg_purity);
-fprintf('=========================================\n');
-
-%% Save the average value
-results =  {
-    filename, ...
-    obj_all, ...
-    avg_acc, ...
-    avg_nmi, ...
-    avg_purity, ...
-    eta, max_iter, lambda1, lambda2, ...
-    acc_list, nmi_list  % Save detailed results for each discount.
-};
-
-toc
+% figure;
+% plot(1:max_iter, obj_values(1:max_iter));
